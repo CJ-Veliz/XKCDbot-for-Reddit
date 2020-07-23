@@ -10,7 +10,7 @@ class XKCD_bot:
         self.additional_comments = []
         self.rate_limit_used = 0
         self.rate_limit_remaining = 60
-        self.rate_limit_reset = 0
+        self.rate_limit_reset = 60
 
         if not os.path.isfile("posts_replied_to.txt"):
             self.posts_replied_to = []
@@ -41,8 +41,9 @@ class XKCD_bot:
                                 'showedits' : True, 'showmore' : True,
                                 'sort': 'best', 'threaded' : False}
 
-        top_level_response = requests.get(url= f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/.json",
-                                            params= top_level_parameters, headers= headers)
+        # top_level_response = requests.get(url= f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/.json",
+        #                                     params= top_level_parameters, headers= headers)
+        top_level_response = self.api_get_request(f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/.json", top_level_parameters, headers)
 
         comments = top_level_response.json()[1]['data']['children']
         comment_list = []
@@ -65,8 +66,9 @@ class XKCD_bot:
         for top_level_comment_id in self.get_top_level_comments(subreddit, article_id, headers):
             parameters['comment'] = top_level_comment_id
 
-            response = requests.get(url= f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/",
-                                    params= parameters, headers= headers)
+            # response = requests.get(url= f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/",
+            #                         params= parameters, headers= headers)
+            response = self.api_get_request(f"https://oauth.reddit.com/r/{subreddit}/comments/{article_id}/", parameters, headers)
             listing = response.json()[1]
 
             top_level_comment = listing['data']['children'][0]['data']
@@ -95,38 +97,40 @@ class XKCD_bot:
         comment_ids = ",".join(self.additional_comments[: 100])
         self.additional_comments = self.additional_comments[100 :]
 
-        parameters = {'api_type': 'json', 'link_id': f"t3_{article_id}", 'children': comment_ids}
+        if comment_ids:
+            parameters = {'api_type': 'json', 'link_id': f"t3_{article_id}", 'children': comment_ids}
 
-        more_comments = requests.get(url="https://api.reddit.com/api/morechildren.json",
-                                        params= parameters, headers= headers)
-        more_comments = more_comments.json()['data']['things']
+            # more_comments = requests.get(url="https://api.reddit.com/api/morechildren.json",
+            #                                 params= parameters, headers= headers)
+            more_comments = self.api_get_request("https://api.reddit.com/api/morechildren.json", parameters, headers)
+            more_comments = more_comments.json()['data']['things']
 
-        for comment in more_comments:
-            if comment['kind'] == "t1":
-                self.scan_comment_text_and_reply(comment['data'], headers)
-            elif comment['kind'] == "more":
-                self.additional_comments.extend(comment['data']['children'])
+            for comment in more_comments:
+                if comment['kind'] == "t1":
+                    self.scan_comment_text_and_reply(comment['data'], headers)
+                elif comment['kind'] == "more":
+                    self.additional_comments.extend(comment['data']['children'])
 
 
     def scan_comment_text_and_reply(self, comment_data: dict, headers: dict):
 
-        # regex_scan = re.search( "https://xkcd\\.com/\\d{1,4}(?:/| |\\n)", comment_data['body'])
+        regex_scan = re.search( "https://xkcd\\.com/\\d{1,4}(?:/| |\\n)", comment_data['body'])
 
-        # if regex_scan:
-        #     print("\n", "---------------------text found---------------------", "\n")
-        #     print(regex_scan.group(0))
+        if regex_scan:
+            print("\n", "---------------------text found---------------------", "\n")
+            print(regex_scan.group(0))
 
-        #     if comment_data['id'] not in self.posts_replied_to:
-        #         parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
+            if comment_data['id'] not in self.posts_replied_to:
+                parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
 
-        #         parameters['text'] = "Comic Alt/Title Text:" + \
-        #         self.get_comic_title_text(regex_scan.group(0)) + "\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text )"
+                parameters['text'] = "Comic Alt/Title Text:" + \
+                self.get_comic_title_text(regex_scan.group(0)) + "\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text )"
 
-        #         response = requests.post(url= "https://oauth.reddit.com/api/comment",
-        #                                     params= parameters, headers= headers)
+                # response = requests.post(url= "https://oauth.reddit.com/api/comment",
+                #                             params= parameters, headers= headers)
 
-        #         print(response.text)
-        #         self.posts_replied_to.append(comment_data['id'])
+                # print(response.text)
+                # self.posts_replied_to.append(comment_data['id'])
 
         # TODO: regex
     def get_comic_title_text(self, xkcd_url: str) -> str:
@@ -136,8 +140,16 @@ class XKCD_bot:
         return comic.find('img')['title']
 
 
-    # def api_get_request():
-    #     pass
+    def api_get_request(self, api_url: str, get_paramaters: dict, get_headers: dict) -> requests.models.Response:
+        if self.rate_limit_remaining <= 0:
+            time.sleep(self.rate_limit_reset)
+        else:
+            api_response = requests.get(url= api_url, params= get_paramaters, headers= get_headers)
+            
+            self.rate_limit_reset = int(api_response.headers['x-ratelimit-reset'])
+            self.rate_limit_remaining = int(float(api_response.headers['x-ratelimit-remaining']))
+            self.rate_limit_used = int(api_response.headers['x-ratelimit-used'])
+            return api_response
 
 
 
