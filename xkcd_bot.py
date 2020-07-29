@@ -4,9 +4,9 @@ from bs4 import BeautifulSoup
 import re
 import config
 import time
+import mysql.connector
 
 class XKCD_bot:
-
     def __init__(self):
         self.additional_comments = []
         self.rate_limit_used = 0
@@ -15,13 +15,15 @@ class XKCD_bot:
         self.request_count = 0
         self.scan_count = 0
 
-        if not os.path.isfile("posts_replied_to.txt"):
-            self.posts_replied_to = []
-        else:
-            with open("posts_replied_to.txt", 'r') as f:
-                self.posts_replied_to = f.read()
-                self.posts_replied_to = self.posts_replied_to.split("\n")
-                self.posts_replied_to = list(filter(None, self.posts_replied_to))
+        self.database = mysql.connector.connect(
+                host= config.dbHost,
+                user=config.dbUser,
+                password=config.dbPassword,
+                database=config.database
+                )
+        cursor = self.database.cursor()
+        cursor.execute("SELECT parent_id FROM posts")
+        self.posts_replied_to = [i[0] for i in cursor.fetchall()]
 
     def authorize(self) -> dict:
         client_auth = requests.auth.HTTPBasicAuth(config.CLIENT_ID, config.CLIENT_SECRET)
@@ -111,9 +113,8 @@ class XKCD_bot:
 
 
     def scan_comment_text_and_reply(self, comment_data: dict, headers: dict):
-
-        regex_scan = re.search("(https://xkcd\\.com/\\d{1,4}/?)(?:\\)| |\\n)", comment_data['body'])
         self.scan_count += 1
+        regex_scan = re.search("(https://xkcd\\.com/)(\\d{1,4})(?:\\s|/|\\)|$)", comment_data['body'])
 
         if regex_scan:
             print("\n", "---------------------text found---------------------", "\n")
@@ -123,7 +124,7 @@ class XKCD_bot:
                 parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
 
                 parameters['text'] = "Comic Title Text: **" + \
-                self.get_comic_title_text(regex_scan.group(1)) + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
+                self.get_comic_title_text( regex_scan.group(2) ) + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
 
                 if self.rate_limit_remaining <= 0:
                     time.sleep(self.rate_limit_reset)
@@ -131,16 +132,18 @@ class XKCD_bot:
                 response = requests.post(url= "https://oauth.reddit.com/api/comment",
                                             params= parameters, headers= headers)
                 print("POST response", response)
-                print(response.json())
+                response = response.json()
+                print(response)
 
-                if response.json()['json']['errors']:
+                if response['json']['errors']:
                     print("RATE lIMIT ERROR")
                 else:
-                    self.posts_replied_to.append(comment_data['id'])
+                    self.db_insert_post(response['json']['data']['things'][0]['data'], regex_scan.group(2))
 
 
-    def get_comic_title_text(self, xkcd_url: str) -> str:
-        comic_page = BeautifulSoup(requests.get(url= xkcd_url).text, 'html.parser')
+
+    def get_comic_title_text(self, xkcd_number: str) -> str:
+        comic_page = BeautifulSoup(requests.get(url=f"https://xkcd.com/{xkcd_number}/").text, 'html.parser')
 
         comic = comic_page.find(id='comic')
         return comic.find('img')['title']
@@ -176,17 +179,20 @@ class XKCD_bot:
         print(f"finished monitoring /r/{subreddit}/ with {self.request_count} reddit api requests and {self.scan_count} comments scanned")
 
 
+    def db_insert_post(self, post_comment: dict, xkcd_number: str):
+        cursor = self.database.cursor()
+        query = f"INSERT INTO posts (parent_id, post_id, subreddit, commic) VALUES ('{post_comment['parent_id'][3:]}', '{post_comment['id']}', '{post_comment['subreddit']}', '{xkcd_number}')"
+        cursor.execute(query)
+
+
+
 xkcd = XKCD_bot()
 # xkcd.scan_submission("test", "hvfakc")
 # xkcd.scan_submission("dataisbeautiful", "hs9mnz")
 # xkcd.scan_submission("ProgrammerHumor", "hy1piz")
-xkcd.monitor_subreddit_hot25('dndmemes')
+xkcd.monitor_subreddit_hot25('ProgrammerHumor')
 
 while xkcd.additional_comments:
     xkcd.resolve_more_comments
 
-# print(f"finished with {xkcd.request_count} reddit api requests and {xkcd.scan_count} comments scanned")
-
-with open("posts_replied_to.txt", "w") as f:
-    for post_id in xkcd.posts_replied_to:
-        f.write(post_id + "\n")
+xkcd.database.commit()
