@@ -5,6 +5,7 @@ import re
 import config
 import time
 import mysql.connector
+import logging
 
 class XKCD_bot:
     def __init__(self):
@@ -24,6 +25,8 @@ class XKCD_bot:
         cursor = self.database.cursor()
         cursor.execute("SELECT parent_id FROM posts")
         self.posts_replied_to = [i[0] for i in cursor.fetchall()]
+
+        logging.basicConfig(filename="bot_log.log", filemode='a', format="%(asctime)s %(levelname)-4s: %(message)s", datefmt='%Y-%m-%d %H:%M:%S', level=logging.INFO)
 
     def authorize(self) -> dict:
         client_auth = requests.auth.HTTPBasicAuth(config.CLIENT_ID, config.CLIENT_SECRET)
@@ -116,29 +119,29 @@ class XKCD_bot:
         self.scan_count += 1
         regex_scan = re.search("(https://xkcd\\.com/)(\\d{1,4})(?:\\s|/|\\)|$)", comment_data['body'])
 
-        if regex_scan:
-            print("\n", "---------------------text found---------------------", "\n")
-            print(regex_scan.group(0))
+        if regex_scan and comment_data['id'] not in self.posts_replied_to:
 
-            if comment_data['id'] not in self.posts_replied_to:
-                parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
+            parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
+            parameters['text'] = "Comic Title Text: **" + \
+            self.get_comic_title_text( regex_scan.group(2) ) + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
 
-                parameters['text'] = "Comic Title Text: **" + \
-                self.get_comic_title_text( regex_scan.group(2) ) + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
+            if self.rate_limit_remaining <= 0:
+                time.sleep(self.rate_limit_reset)
 
-                if self.rate_limit_remaining <= 0:
-                    time.sleep(self.rate_limit_reset)
-
-                response = requests.post(url= "https://oauth.reddit.com/api/comment",
-                                            params= parameters, headers= headers)
-                print("POST response", response)
+            response = requests.post(url= "https://oauth.reddit.com/api/comment",
+                                        params= parameters, headers= headers)
+            if response.ok:
                 response = response.json()
-                print(response)
 
                 if response['json']['errors']:
-                    print("RATE lIMIT ERROR")
+                    logging.error("POST request application error, %s", response['json']['errors'])
                 else:
-                    self.db_insert_post(response['json']['data']['things'][0]['data'], regex_scan.group(2))
+                    posted_comment_data = response['json']['data']['things'][0]['data']
+                    logging.info("POST %s, %s", posted_comment_data['name'], posted_comment_data['subreddit'])
+                    self.db_insert_post(posted_comment_data, regex_scan.group(2))
+
+            else:
+                logging.error("POST response error, <%s>, %s", response, response.text)
 
 
 
@@ -156,15 +159,18 @@ class XKCD_bot:
 
         api_response = requests.get(url= api_url, params= request_paramaters, headers= request_headers)
         self.request_count += 1
-        print(api_response)
 
-        if request_headers.get("Authorization"):
-            self.rate_limit_reset = int(api_response.headers['x-ratelimit-reset'])
-            self.rate_limit_remaining = int(float(api_response.headers['x-ratelimit-remaining']))
-            self.rate_limit_used = int(api_response.headers['x-ratelimit-used'])
+        if api_response.ok:
+            if request_headers.get("Authorization"):
+                self.rate_limit_reset = int(api_response.headers['x-ratelimit-reset'])
+                self.rate_limit_remaining = int(float(api_response.headers['x-ratelimit-remaining']))
+                self.rate_limit_used = int(api_response.headers['x-ratelimit-used'])
 
-        print(f"https request sent: {api_url}")
-        print(f"rate limits: {self.rate_limit_used} used with {self.rate_limit_remaining} remaining. {self.rate_limit_reset} seconds to reset")
+            print(f"https request sent: {api_url}")
+            print(f"rate limits: {self.rate_limit_used} used with {self.rate_limit_remaining} remaining. {self.rate_limit_reset} seconds to reset")
+        else:
+            logging.critical("ERROR, <%s> %s", api_response, api_response.text)
+
         return api_response
 
 
