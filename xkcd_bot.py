@@ -14,6 +14,8 @@ class XKCD_bot:
         self.rate_limit_reset = 60
         self.request_count = 0
         self.scan_count = 0
+        self.reddit_session = requests.Session()
+        logging.basicConfig(filename="bot.log", filemode='a', format="%(asctime)s %(levelname)-4s: %(message)s", datefmt='%Y-%m-%d %H:%M:%S', level=logging.INFO)
 
         self.user_header = {}
         self.oauth_authorize()
@@ -29,9 +31,6 @@ class XKCD_bot:
         cursor = self.database.cursor()
         cursor.execute("SELECT parent_id FROM posts")
         self.posts_replied_to = set([i[0] for i in cursor.fetchall()])
-
-        logging.basicConfig(filename="bot.log", filemode='a', format="%(asctime)s %(levelname)-4s: %(message)s", datefmt='%Y-%m-%d %H:%M:%S', level=logging.INFO)
-        self.reddit_session = requests.Session()
 
     def oauth_authorize(self, retry_count:int=5) -> dict:
         client_auth = requests.auth.HTTPBasicAuth(config.CLIENT_ID, config.CLIENT_SECRET)
@@ -62,6 +61,8 @@ class XKCD_bot:
             logging.critical("OAUTH ERROR: <%s>, %s", authorization_response, authorization_response.text)
 
 
+    # returns all direct replies to a reddit submission in a list
+    # also adds more_comments objects encountered to instance variable
     def get_top_level_comments(self, subreddit: str, article_id: str) -> list:
         top_level_parameters = {'article': article_id, 'depth': 1,
                                 'showedits' : True, 'showmore' : True,
@@ -73,6 +74,7 @@ class XKCD_bot:
         if top_level_response:
             comments = top_level_response.json()[1]['data']['children']
         else:
+            logging.error("#get_top_level_comments None response")
             return comment_list
 
         for comment in comments:
@@ -97,6 +99,7 @@ class XKCD_bot:
             if response:
                 listing = response.json()[1]
             else:
+                logging.error("#scan_submission None response")
                 return
 
             if listing['data']['children']:
@@ -114,6 +117,7 @@ class XKCD_bot:
         if replies_listing:
             for child in replies_listing['data']['children']:
 
+            # <t1> is reddit's identifier for comments
                 if child['kind'] == 't1':
                     self.scan_comment_text_and_reply(child['data'])
                     self.traverse_comment_replies(child['data'])
@@ -136,6 +140,7 @@ class XKCD_bot:
             if more_comments:
                 more_comments = more_comments.json()['json']['data']['things']
             else:
+                logging.error("#resolve_more_comments None response")
                 return
 
             for comment in more_comments:
@@ -145,29 +150,34 @@ class XKCD_bot:
                     self.additional_comments.extend(comment['data']['children'])
 
 
+    # main bot function, scans comment body text for links to xkcd.com using regex and
+    # posts the linked commic's title text as a reply
     def scan_comment_text_and_reply(self, comment_data: dict):
         self.scan_count += 1
         regex_scan = re.search("(https://xkcd\\.com/)(\\d{1,4})(?:\\s|/|\\)|$)", comment_data['body'])
 
         if regex_scan and comment_data['id'] not in self.posts_replied_to:
 
+            # group 2 in the regex string is the xkcd comic id
+            # retry in a loop 10 times to get title text from xkcd.com
             title_text = self.get_comic_title_text( regex_scan.group(2) )
             xkcd_retry = 10
             while not title_text and xkcd_retry >= 0:
+                # exponential backoff
                 time.sleep(2 ** ((10 - xkcd_retry)//2))
                 title_text = self.get_comic_title_text( regex_scan.group(2) )
                 xkcd_retry -= 1
 
             parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
 
-            # set bot's reddit-reply body text
+            # set bot's reply text
             parameters['text'] = "Comic Title Text: **" + title_text + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
 
             if self.rate_limit_remaining <= 0:
                 print(f"\nLIMIT EXCEEDED, waiting: {self.rate_limit_reset} seconds\n")
                 time.sleep(self.rate_limit_reset + 3)
 
-                # does not retry
+                # does not retry comment POST
                 # TODO: store comment in database and run separate retry process elsewhere
             try:
                 response = self.reddit_session.post(url= "https://oauth.reddit.com/api/comment",
@@ -200,7 +210,7 @@ class XKCD_bot:
             comic_page = BeautifulSoup(requests.get(url=f"https://xkcd.com/{xkcd_number}/", timeout= 10).text, 'html.parser')
         except Exception:
             pass
-            
+
         if comic_page:
             comic = comic_page.find(id='comic')
             return comic.find('img')['title']
@@ -208,16 +218,17 @@ class XKCD_bot:
             return None
 
 
+    # called for all bot's GET requests, handles rate limiting, retries, and other errors
     def api_get_request(self, api_url: str, request_paramaters: dict, request_headers: dict, retry_count:int=3) -> requests.models.Response:
         if self.rate_limit_remaining <= 0:
             print(f"\nLIMIT EXCEEDED, waiting: {self.rate_limit_reset} seconds\n")
-            time.sleep(self.rate_limit_reset)
+            time.sleep(self.rate_limit_reset + 3)
 
         try:
             self.request_count += 1
             api_response = self.reddit_session.get(url= api_url, params= request_paramaters, headers= request_headers, timeout= 10)
-        except requests.exceptions.RequestException as e:
 
+        except requests.exceptions.RequestException as e:
             if retry_count >= 0:
                 # exponential backoff
                 time.sleep(2 ** (4 - retry_count))
@@ -225,7 +236,6 @@ class XKCD_bot:
                 api_response = self.api_get_request(api_url, request_paramaters, request_headers, retry_count-1)
             else:
                 return None
-                # make sure relevent callers log none response
 
         if api_response.ok:
             if request_headers.get("Authorization"):
@@ -248,7 +258,7 @@ class XKCD_bot:
 
     def monitor_subreddit_hot25(self, subreddit: str):
         header = {'User-Agent': config.USER_AGENT}
-        parameters = {'limit': 35}
+        parameters = {'limit': 25}
         subreddit_hot_listing = self.api_get_request(f"https://www.reddit.com/r/{subreddit}/hot/.json", parameters, header)
 
         if subreddit_hot_listing:
@@ -275,7 +285,10 @@ class XKCD_bot:
 
 
 xkcd = XKCD_bot()
-# xkcd.scan_submission("test", "i1dqpn")
-# xkcd.scan_submission("dataisbeautiful", "hs9mnz")
-# xkcd.scan_submission("nostupidquestions", "i06vp2")
-xkcd.monitor_subreddit_hot25('AskReddit')
+
+cursor = xkcd.database.cursor()
+cursor.execute("SELECT DISTINCT subreddit FROM posts")
+subreddits = [i[0] for i in cursor.fetchall()]
+
+for subreddit in subreddits:
+    xkcd.monitor_subreddit_hot25(subreddit)
