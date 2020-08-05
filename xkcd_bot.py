@@ -157,6 +157,8 @@ class XKCD_bot:
         regex_scan = re.search("(https://xkcd\\.com/)(\\d{1,4})(?:\\s|/|\\)|$)", comment_data['body'])
 
         if regex_scan and comment_data['id'] not in self.posts_replied_to:
+            if comment_data['author'] == 'auto-xkcd37':
+                return
 
             # group 2 in the regex string is the xkcd comic id
             # retry in a loop 10 times to get title text from xkcd.com
@@ -256,9 +258,9 @@ class XKCD_bot:
 
         return api_response
 
-    def monitor_subreddit_hot25(self, subreddit: str):
+    def monitor_subreddit_hot25(self, subreddit: str, monitor_limit:int=25):
         header = {'User-Agent': config.USER_AGENT}
-        parameters = {'limit': 25}
+        parameters = {'limit': monitor_limit}
         subreddit_hot_listing = self.api_get_request(f"https://www.reddit.com/r/{subreddit}/hot/.json", parameters, header)
 
         if subreddit_hot_listing:
@@ -287,8 +289,8 @@ class XKCD_bot:
 xkcd = XKCD_bot()
 
 cursor = xkcd.database.cursor()
-cursor.execute("SELECT DISTINCT subreddit FROM posts")
-subreddits = [i[0] for i in cursor.fetchall()]
+cursor.execute("SELECT DISTINCT subreddit, monitor_limit FROM subreddits")
+subreddits = list(cursor.fetchall())
 
 for subreddit in subreddits:
-    xkcd.monitor_subreddit_hot25(subreddit)
+    xkcd.monitor_subreddit_hot25(subreddit[0], subreddit[1])
