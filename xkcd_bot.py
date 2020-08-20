@@ -173,7 +173,7 @@ class XKCD_bot:
             parameters = {'api_type': 'json', 'thing_id': comment_data['name']}
 
             # set bot's reply text
-            parameters['text'] = "Comic Title Text: **" + title_text + "**\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text) ^\([source](https://github.com/CJ-Veliz/XKCDbot-for-Reddit)\)"
+            parameters['text'] = f"Comic Title Text: **{title_text}**\n\n[mobile link](https://m.xkcd.com/{regex_scan.group(2)}/)\n\n---\n^(Made for mobile users, to easily see xkcd comic's title text)"
 
             if self.rate_limit_remaining <= 0:
                 print(f"\nLIMIT EXCEEDED, waiting: {self.rate_limit_reset} seconds\n")
